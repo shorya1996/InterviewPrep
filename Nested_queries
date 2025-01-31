@@ -1,0 +1,70 @@
+WITH issued_cards AS (
+    -- Extract card details and transaction information
+    SELECT 
+        t.transaction_ID,
+        t.card_number,
+        ic.card_issue_date,
+        SUBSTRING(ic.card_issue_date, 1, 7) AS issue_month,  -- Extract YYYY-MM from card_issue_date
+        CAST(ic.card_issue_date AS TIMESTAMP) AS issue_date,
+        t.transaction_date,
+        t.decision,
+        t.merchant_type -- This includes ATM transactions now
+    FROM first_table t
+    JOIN second_table ic ON t.transaction_ID = ic.transaction_ID
+),
+first_decline_within_30_days AS (
+    -- Identify declined transactions and rank them for each card
+    SELECT 
+        ic.card_number,
+        ic.transaction_ID,
+        ic.transaction_date,
+        ic.decision,
+        ic.merchant_type,  -- Include merchant type (ATM or not)
+        ROW_NUMBER() OVER (PARTITION BY ic.card_number ORDER BY CAST(ic.transaction_date AS TIMESTAMP) ASC) AS txn_rank
+    FROM issued_cards ic
+    WHERE ic.decision = 'decline'
+      AND CAST(ic.transaction_date AS TIMESTAMP) <= DATE_ADD(ic.issue_date, 30)  -- First declined transaction within 30 days of card issue
+),
+first_transaction_decline AS (
+    -- Identify the first transaction for each card and if it is declined
+    SELECT 
+        ic.card_number,
+        ic.transaction_ID,
+        ic.transaction_date,
+        ic.decision,
+        ic.merchant_type,
+        ROW_NUMBER() OVER (PARTITION BY ic.card_number ORDER BY CAST(ic.transaction_date AS TIMESTAMP) ASC) AS txn_rank
+    FROM issued_cards ic
+    WHERE ic.decision = 'decline'
+),
+total_cards_per_month AS (
+    -- Count total distinct cards issued in a month
+    SELECT 
+        issue_month,
+        COUNT(DISTINCT card_number) AS total_cards
+    FROM issued_cards
+    GROUP BY issue_month
+),
+declined_transactions AS (
+    -- Count distinct declined cards based on first decline (first attempt and first decline within 30 days)
+    SELECT 
+        ic.issue_month,
+        COUNT(DISTINCT CASE WHEN ft1.txn_rank = 1 THEN ft1.card_number END) AS declined_first_attempt,  -- First transaction decline
+        COUNT(DISTINCT CASE WHEN ft2.txn_rank = 1 THEN ft2.card_number END) AS declined_first_30_days  -- First decline within 30 days
+    FROM issued_cards ic
+    LEFT JOIN first_transaction_decline ft1 
+        ON ic.card_number = ft1.card_number AND ft1.txn_rank = 1  -- First transaction decline
+    LEFT JOIN first_decline_within_30_days ft2 
+        ON ic.card_number = ft2.card_number AND ft2.txn_rank = 1  -- First decline within 30 days
+    GROUP BY ic.issue_month
+)
+-- Final selection combining the total and declined card counts
+SELECT 
+    dt.issue_month,
+    tc.total_cards,
+    dt.declined_first_attempt,
+    dt.declined_first_30_days,
+    (dt.declined_first_attempt * 100.0 / NULLIF(tc.total_cards, 0)) AS decline_first_attempt_percentage,
+    (dt.declined_first_30_days * 100.0 / NULLIF(tc.total_cards, 0)) AS decline_first_30_days_percentage
+FROM declined_transactions dt
+JOIN total_cards_per_month tc ON dt.issue_month = tc.issue_month;
