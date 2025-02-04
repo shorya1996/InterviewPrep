@@ -3,15 +3,27 @@
     %let month = %scan(&months, &i, %str( ));
 
     %do %while (&month ne);
-        %let start_date = %sysfunc(inputn(&month.-01, yymmdd10.));
-        %let end_date = %sysfunc(intnx(month, &start_date, 0, e), yymmdd10.);
+        /* Calculate start and end dates as strings */
+        %let start_date = &month.-01; /* Format as yyyy-mm-01 */
+        %let end_date = %sysfunc(intnx(month, %sysfunc(inputn(&month.-01, yymmdd10.)), 0, e), yymmdd10.);
 
+        /* Keep "yyyy-mm" format for the month */
+        %let formatted_month = &month;
+
+        /* Print values in the log */
+        %put Processing Month: &formatted_month;
+        %put Start Date: &start_date;
+        %put End Date: &end_date;
+
+        /* SQL Query */
         proc sql;
             select *
             from your_table
-            where transaction_date between "&start_date"d and "&end_date"d;
+            where transaction_date between "&start_date" and "&end_date"
+              and substr(transaction_date, 1, 7) = "&formatted_month"; /* Matching yyyy-mm */
         quit;
 
+        /* Move to the next month in the list */
         %let i = %eval(&i + 1);
         %let month = %scan(&months, &i, %str( ));
     %end;
