@@ -28,3 +28,26 @@
         %let month = %scan(&months, &i, %str( ));
     %end;
 %mend fetch_data;
+%macro combine_tables(months=);
+    %let i = 1;
+    %let month = %scan(&months, &i, %str( ));
+    %let table_list = ;
+
+    /* Generate a list of table names */
+    %do %while (&month ne);
+        %let table_name = transactions_&month; 
+        %let table_list = &table_list &table_name;
+        
+        %let i = %eval(&i + 1);
+        %let month = %scan(&months, &i, %str( ));
+    %end;
+
+    /* Combine the tables dynamically using DATA step */
+    data combined_data;
+        set &table_list;
+    run;
+
+    /* Verify the combined data */
+    proc print data=combined_data;
+    run;
+%mend combine_tables;
