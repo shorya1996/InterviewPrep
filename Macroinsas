@@ -1,0 +1,18 @@
+%macro fetch_data(months=);
+    %let i = 1;
+    %let month = %scan(&months, &i, %str( ));
+
+    %do %while (&month ne);
+        %let start_date = %sysfunc(inputn(&month.-01, yymmdd10.));
+        %let end_date = %sysfunc(intnx(month, &start_date, 0, e), yymmdd10.);
+
+        proc sql;
+            select *
+            from your_table
+            where transaction_date between "&start_date"d and "&end_date"d;
+        quit;
+
+        %let i = %eval(&i + 1);
+        %let month = %scan(&months, &i, %str( ));
+    %end;
+%mend fetch_data;
