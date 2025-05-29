@@ -48,8 +48,10 @@ decline_join AS (
 -- Step 4: Identify rebound transactions
 rebound_flags AS (
   SELECT
+    d.transaction_id,
     d.account_number,
     d.transaction_date,
+    d.amount,
     CASE 
       WHEN d.decision = 'Approved'
            AND d.amount > a.p95_amt
@@ -61,25 +63,42 @@ rebound_flags AS (
     ON d.account_number = a.account_number
 ),
 
--- Step 5: Count rebound events per account
-account_rebound_counts AS (
-  SELECT
-    account_number,
-    COUNT(*) AS rebound_event_count
+-- Step 5: Only the actual flagged rebound transactions
+flagged_rebounds AS (
+  SELECT *
   FROM rebound_flags
   WHERE rebound_flag = 1
-  GROUP BY account_number
 ),
 
--- Step 6: Flag accounts with 2 or more rebound events in last 30 days
-flagged_accounts AS (
+-- Step 6: Link rebound transactions to claims within 1–10 days
+rebound_with_claims AS (
+  SELECT
+    r.account_number,
+    r.transaction_id,
+    r.transaction_date,
+    r.amount,
+    c.claim_entry_date,
+    CASE
+      WHEN c.claim_entry_date BETWEEN DATE_ADD(r.transaction_date, 1) AND DATE_ADD(r.transaction_date, 10)
+           THEN 1 ELSE 0
+    END AS claim_within_10d
+  FROM flagged_rebounds r
+  LEFT JOIN claims c
+    ON r.account_number = c.account_number
+       AND c.claim_entry_date BETWEEN DATE_ADD(r.transaction_date, 1) AND DATE_ADD(r.transaction_date, 10)
+),
+
+-- Step 7: Count rebound events and claims per account
+final_account_flags AS (
   SELECT
     account_number,
-    rebound_event_count
-  FROM account_rebound_counts
-  WHERE rebound_event_count >= 2
+    COUNT(*) AS rebound_event_count,
+    COUNT(CASE WHEN claim_within_10d = 1 THEN 1 END) AS claims_within_10d
+  FROM rebound_with_claims
+  GROUP BY account_number
 )
 
--- Final Output
+-- Final output: accounts with 2+ rebounds and at least 1 claim within 10 days
 SELECT *
-FROM flagged_accounts;
+FROM final_account_flags
+WHERE rebound_event_count >= 2;
