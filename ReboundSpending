@@ -1,4 +1,4 @@
--- Step 1: Filter approved transactions from last 30 days
+-- Step 1: Approved transactions in the last 30 days
 WITH recent_approved AS (
   SELECT
     account_number,
@@ -9,7 +9,7 @@ WITH recent_approved AS (
     AND transaction_date BETWEEN DATE_SUB(CURRENT_DATE, 30) AND CURRENT_DATE
 ),
 
--- Step 2: Rank amounts per account and get total count
+-- Step 2: Ranking amounts for 95th percentile approximation
 ranked_approved AS (
   SELECT
     account_number,
@@ -20,7 +20,7 @@ ranked_approved AS (
   FROM recent_approved
 ),
 
--- Step 3: Pick the 95th percentile row per account (approximate)
+-- Step 3: Approximate 95th percentile
 account_thresholds AS (
   SELECT
     account_number,
@@ -29,28 +29,25 @@ account_thresholds AS (
   WHERE rn = CAST(cnt * 0.95 AS INT)
 ),
 
--- Step 4: Policy declines in last 3 days (correlated subquery)
-declines_window AS (
+-- Step 4: Join transactions with policy declines in 3-day window
+decline_join AS (
   SELECT
     t.transaction_id,
     t.account_number,
     t.transaction_date,
     t.amount,
     t.decision,
-
-    (
-      SELECT COUNT(*)
-      FROM transactions t2
-      WHERE t2.account_number = t.account_number
-        AND t2.transaction_date BETWEEN DATE_SUB(t.transaction_date, 3) AND DATE_SUB(t.transaction_date, 1)
-        AND t2.decision = 'Policy Decline'
-    ) AS decline_3d
-
+    COUNT(t2.transaction_id) AS decline_3d
   FROM transactions t
+  LEFT JOIN transactions t2
+    ON t.account_number = t2.account_number
+    AND t2.transaction_date BETWEEN DATE_SUB(t.transaction_date, 3) AND DATE_SUB(t.transaction_date, 1)
+    AND t2.decision = 'Policy Decline'
   WHERE t.transaction_date BETWEEN DATE_SUB(CURRENT_DATE, 30) AND CURRENT_DATE
+  GROUP BY t.transaction_id, t.account_number, t.transaction_date, t.amount, t.decision
 ),
 
--- Step 5: Flag rebound pattern
+-- Step 5: Flag rebound transactions
 rebound_flags AS (
   SELECT
     d.*,
@@ -61,12 +58,12 @@ rebound_flags AS (
            AND d.decline_3d >= 2 THEN 1
       ELSE 0
     END AS rebound_flag
-  FROM declines_window d
+  FROM decline_join d
   LEFT JOIN account_thresholds a
     ON d.account_number = a.account_number
 ),
 
--- Step 6: Backtest using claims data
+-- Step 6: Join with claims
 rebound_with_claims AS (
   SELECT
     r.*,
