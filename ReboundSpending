@@ -45,60 +45,34 @@ decline_join AS (
   GROUP BY t.transaction_id, t.account_number, t.transaction_date, t.amount, t.decision
 ),
 
--- Step 4: Identify rebound transactions
+-- Step 4: Flag rebound transactions
 rebound_flags AS (
   SELECT
-    d.transaction_id,
     d.account_number,
+    d.transaction_id,
     d.transaction_date,
     d.amount,
-    CASE 
-      WHEN d.decision = 'Approved'
-           AND d.amount > a.p95_amt
-           AND d.decline_3d >= 2 THEN 1
-      ELSE 0
-    END AS rebound_flag
-  FROM decline_join d
+    1 AS rebound_flag
+  FROM decline_counts d
   LEFT JOIN account_thresholds a
     ON d.account_number = a.account_number
+  WHERE d.decision = 'Approved'
+    AND d.amount > a.p95_amt
+    AND d.decline_3d >= 2
 ),
 
--- Step 5: Only the actual flagged rebound transactions
-flagged_rebounds AS (
-  SELECT *
-  FROM rebound_flags
-  WHERE rebound_flag = 1
-),
-
--- Step 6: Link rebound transactions to claims within 1–10 days
-rebound_with_claims AS (
-  SELECT
-    r.account_number,
-    r.transaction_id,
-    r.transaction_date,
-    r.amount,
-    c.claim_entry_date,
-    CASE
-      WHEN c.claim_entry_date BETWEEN DATE_ADD(r.transaction_date, 1) AND DATE_ADD(r.transaction_date, 10)
-           THEN 1 ELSE 0
-    END AS claim_within_10d
-  FROM flagged_rebounds r
-  LEFT JOIN claims c
-    ON r.account_number = c.account_number
-       AND c.claim_entry_date BETWEEN DATE_ADD(r.transaction_date, 1) AND DATE_ADD(r.transaction_date, 10)
-),
-
--- Step 7: Count rebound events and claims per account
-final_account_flags AS (
+-- Step 5: Count rebound events per account in last 30 days
+rebound_counts AS (
   SELECT
     account_number,
-    COUNT(*) AS rebound_event_count,
-    COUNT(CASE WHEN claim_within_10d = 1 THEN 1 END) AS claims_within_10d
-  FROM rebound_with_claims
+    COUNT(*) AS rebound_event_count
+  FROM rebound_flags
   GROUP BY account_number
 )
 
--- Final output: accounts with 2+ rebounds and at least 1 claim within 10 days
-SELECT *
-FROM final_account_flags
-WHERE rebound_event_count >= 2;
+-- Final Output: Flag accounts with 2+ rebound events
+SELECT
+  account_number,
+  rebound_event_count,
+  CURRENT_DATE AS flagged_date
+FROM rebound_counts
