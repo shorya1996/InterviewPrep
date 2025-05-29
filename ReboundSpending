@@ -1,3 +1,4 @@
+-- Step 1: Filter approved transactions from last 30 days
 WITH recent_approved AS (
   SELECT
     account_number,
@@ -8,14 +9,27 @@ WITH recent_approved AS (
     AND transaction_date BETWEEN DATE_SUB(CURRENT_DATE, 30) AND CURRENT_DATE
 ),
 
+-- Step 2: Rank amounts per account and get total count
+ranked_approved AS (
+  SELECT
+    account_number,
+    amount,
+    transaction_date,
+    ROW_NUMBER() OVER (PARTITION BY account_number ORDER BY amount) AS rn,
+    COUNT(*) OVER (PARTITION BY account_number) AS cnt
+  FROM recent_approved
+),
+
+-- Step 3: Pick the 95th percentile row per account (approximate)
 account_thresholds AS (
   SELECT
     account_number,
-    PERCENTILE(amount, 0.95) AS p95_amt
-  FROM recent_approved
-  GROUP BY account_number
+    amount AS p95_amt
+  FROM ranked_approved
+  WHERE rn = CAST(cnt * 0.95 AS INT)
 ),
 
+-- Step 4: Policy declines in last 3 days (correlated subquery)
 declines_window AS (
   SELECT
     t.transaction_id,
@@ -36,6 +50,7 @@ declines_window AS (
   WHERE t.transaction_date BETWEEN DATE_SUB(CURRENT_DATE, 30) AND CURRENT_DATE
 ),
 
+-- Step 5: Flag rebound pattern
 rebound_flags AS (
   SELECT
     d.*,
@@ -51,6 +66,7 @@ rebound_flags AS (
     ON d.account_number = a.account_number
 ),
 
+-- Step 6: Backtest using claims data
 rebound_with_claims AS (
   SELECT
     r.*,
@@ -64,6 +80,7 @@ rebound_with_claims AS (
     ON r.account_number = c.account_number
 )
 
+-- Final output
 SELECT *
 FROM rebound_with_claims
 WHERE rebound_flag = 1;
