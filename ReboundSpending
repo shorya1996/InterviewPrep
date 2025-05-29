@@ -1,0 +1,69 @@
+WITH recent_approved AS (
+  SELECT
+    account_number,
+    amount,
+    transaction_date
+  FROM transactions
+  WHERE decision = 'Approved'
+    AND transaction_date BETWEEN DATE_SUB(CURRENT_DATE, 30) AND CURRENT_DATE
+),
+
+account_thresholds AS (
+  SELECT
+    account_number,
+    PERCENTILE(amount, 0.95) AS p95_amt
+  FROM recent_approved
+  GROUP BY account_number
+),
+
+declines_window AS (
+  SELECT
+    t.transaction_id,
+    t.account_number,
+    t.transaction_date,
+    t.amount,
+    t.decision,
+
+    (
+      SELECT COUNT(*)
+      FROM transactions t2
+      WHERE t2.account_number = t.account_number
+        AND t2.transaction_date BETWEEN DATE_SUB(t.transaction_date, 3) AND DATE_SUB(t.transaction_date, 1)
+        AND t2.decision = 'Policy Decline'
+    ) AS decline_3d
+
+  FROM transactions t
+  WHERE t.transaction_date BETWEEN DATE_SUB(CURRENT_DATE, 30) AND CURRENT_DATE
+),
+
+rebound_flags AS (
+  SELECT
+    d.*,
+    a.p95_amt,
+    CASE 
+      WHEN d.decision = 'Approved'
+           AND d.amount > a.p95_amt
+           AND d.decline_3d >= 2 THEN 1
+      ELSE 0
+    END AS rebound_flag
+  FROM declines_window d
+  LEFT JOIN account_thresholds a
+    ON d.account_number = a.account_number
+),
+
+rebound_with_claims AS (
+  SELECT
+    r.*,
+    c.claim_entry_date,
+    CASE 
+      WHEN c.claim_entry_date BETWEEN DATE_ADD(r.transaction_date, 1) AND DATE_ADD(r.transaction_date, 10)
+           THEN 1 ELSE 0 
+    END AS claim_within_10d
+  FROM rebound_flags r
+  LEFT JOIN claims c
+    ON r.account_number = c.account_number
+)
+
+SELECT *
+FROM rebound_with_claims
+WHERE rebound_flag = 1;
