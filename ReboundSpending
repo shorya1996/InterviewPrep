@@ -1,4 +1,4 @@
--- Step 1: Approved transactions in the last 30 days
+-- Step 1: Approved transactions in last 30 days
 WITH recent_approved AS (
   SELECT
     account_number,
@@ -9,18 +9,16 @@ WITH recent_approved AS (
     AND transaction_date BETWEEN DATE_SUB(CURRENT_DATE, 30) AND CURRENT_DATE
 ),
 
--- Step 2: Ranking amounts for 95th percentile approximation
+-- Step 2: Approximate 95th percentile per account via row_number
 ranked_approved AS (
   SELECT
     account_number,
     amount,
-    transaction_date,
     ROW_NUMBER() OVER (PARTITION BY account_number ORDER BY amount) AS rn,
     COUNT(*) OVER (PARTITION BY account_number) AS cnt
   FROM recent_approved
 ),
 
--- Step 3: Approximate 95th percentile
 account_thresholds AS (
   SELECT
     account_number,
@@ -29,7 +27,7 @@ account_thresholds AS (
   WHERE rn = CAST(cnt * 0.95 AS INT)
 ),
 
--- Step 4: Join transactions with policy declines in 3-day window
+-- Step 3: Count 3-day policy declines before each transaction
 decline_join AS (
   SELECT
     t.transaction_id,
@@ -47,11 +45,11 @@ decline_join AS (
   GROUP BY t.transaction_id, t.account_number, t.transaction_date, t.amount, t.decision
 ),
 
--- Step 5: Flag rebound transactions
+-- Step 4: Identify rebound transactions
 rebound_flags AS (
   SELECT
-    d.*,
-    a.p95_amt,
+    d.account_number,
+    d.transaction_date,
     CASE 
       WHEN d.decision = 'Approved'
            AND d.amount > a.p95_amt
@@ -63,21 +61,25 @@ rebound_flags AS (
     ON d.account_number = a.account_number
 ),
 
--- Step 6: Join with claims
-rebound_with_claims AS (
+-- Step 5: Count rebound events per account
+account_rebound_counts AS (
   SELECT
-    r.*,
-    c.claim_entry_date,
-    CASE 
-      WHEN c.claim_entry_date BETWEEN DATE_ADD(r.transaction_date, 1) AND DATE_ADD(r.transaction_date, 10)
-           THEN 1 ELSE 0 
-    END AS claim_within_10d
-  FROM rebound_flags r
-  LEFT JOIN claims c
-    ON r.account_number = c.account_number
+    account_number,
+    COUNT(*) AS rebound_event_count
+  FROM rebound_flags
+  WHERE rebound_flag = 1
+  GROUP BY account_number
+),
+
+-- Step 6: Flag accounts with 2 or more rebound events in last 30 days
+flagged_accounts AS (
+  SELECT
+    account_number,
+    rebound_event_count
+  FROM account_rebound_counts
+  WHERE rebound_event_count >= 2
 )
 
--- Final output
+-- Final Output
 SELECT *
-FROM rebound_with_claims
-WHERE rebound_flag = 1;
+FROM flagged_accounts;
