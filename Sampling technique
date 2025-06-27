@@ -1,0 +1,85 @@
+%macro stratified_fraud_sampler(
+    data=,               /* Input dataset */
+    out=sample_output,   /* Output sampled dataset */
+    fraud_var=fraud_flag,
+    strata_vars=month pos_type,
+    target_total=1500000,
+    fraud_rate=0.16,
+    seed=123
+);
+
+    %let nonfraud_rate = %sysevalf(1 - &fraud_rate);
+
+    /* Step 1: Separate fraud and non-fraud data */
+    data _fraud _nonfraud;
+        set &data;
+        if &fraud_var = 1 then output _fraud;
+        else output _nonfraud;
+    run;
+
+    /* Step 2: Compute stratum-level distribution in full dataset */
+    proc sql;
+        create table _stratum_sizes as
+        select &strata_vars,
+               count(*) as total,
+               calculated total / (select count(*) from &data) * &target_total as stratum_sample,
+               floor(calculated stratum_sample * &fraud_rate) as fraud_sample,
+               floor(calculated stratum_sample * &nonfraud_rate) as nonfraud_sample
+        from &data
+        group by &strata_vars;
+    quit;
+
+    /* Step 3: Count actual available records in fraud and nonfraud datasets */
+    proc sql;
+        create table _fraud_counts as
+        select &strata_vars, count(*) as available_frauds
+        from _fraud
+        group by &strata_vars;
+
+        create table _nonfraud_counts as
+        select &strata_vars, count(*) as available_nonfrauds
+        from _nonfraud
+        group by &strata_vars;
+    quit;
+
+    /* Step 4: Cap fraud and nonfraud samples */
+    proc sql;
+        create table _fraud_n as
+        select a.&strata_vars,
+               min(a.fraud_sample, b.available_frauds) as _NSIZE_
+        from _stratum_sizes as a
+        left join _fraud_counts as b
+        on %sysfunc(tranwrd(&strata_vars,%str( ),%str(=b.))) = %sysfunc(tranwrd(&strata_vars,%str( ),%str(=a.)))
+        where calculated _NSIZE_ > 0;
+
+        create table _nonfraud_n as
+        select a.&strata_vars,
+               min(a.nonfraud_sample, b.available_nonfrauds) as _NSIZE_
+        from _stratum_sizes as a
+        left join _nonfraud_counts as b
+        on %sysfunc(tranwrd(&strata_vars,%str( ),%str(=b.))) = %sysfunc(tranwrd(&strata_vars,%str( ),%str(=a.)))
+        where calculated _NSIZE_ > 0;
+    quit;
+
+    /* Step 5: Sample from fraud and nonfraud using capped sizes */
+    proc surveyselect data=_fraud out=_fraud_sample
+        method=srs sampsize=_fraud_n seed=&seed;
+        strata &strata_vars;
+    run;
+
+    proc surveyselect data=_nonfraud out=_nonfraud_sample
+        method=srs sampsize=_nonfraud_n seed=&seed;
+        strata &strata_vars;
+    run;
+
+    /* Step 6: Combine sampled data */
+    data &out;
+        set _fraud_sample _nonfraud_sample;
+    run;
+
+    /* Optional: Clean up */
+    proc datasets library=work nolist;
+        delete _:;
+    quit;
+
+%mend;
