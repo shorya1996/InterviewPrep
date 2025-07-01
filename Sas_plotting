@@ -1,58 +1,42 @@
 %macro plot_fraud_by_group(groupvar=, rev_type_list=);
 
-  /* Step 1: Filter relevant records */
+  /* Step 1: Filter the dataset */
   data filtered;
     set your_sql_summary;
     where upcase(rev_type) in (&rev_type_list);
   run;
 
-  /* Step 2: Get all distinct values for the selected groupvar */
+  /* Step 2: Get unique values for the selected group variable */
   proc sql noprint;
     select distinct &groupvar into :groupval1 - :groupval999
     from filtered;
     %let groupcnt = &sqlobs;
   quit;
 
-  /* Step 3: Create long-format table with scores */
+  /* Step 3: Convert to long format with 3 scores */
   data long_format;
     set filtered;
     length score_name $20 score_bucket $20;
 
-    /* Score 1 */
-    score_name = "Network_Score";
-    score_bucket = put(Network_Score, $20.);
-    bucket_order = input(score_bucket, best12.);
-    fraud_rate_unit = unit_fraud_rate * 100;
-    fraud_rate_dollar = dollar_fraud_rate * 100;
-    fraud_txn_cnt = fraud_txn;
-    fraud_amt = fraud_dollar;
-    total_amt = total_dollar;
-    output;
+    array scores{3} $20 _temporary_ ('Network_Score', 'ML_Score', 'SAS50');
+    array buckets{3} $20 Network_Score ML_score_bucket SAS50;
 
-    /* Score 2 */
-    score_name = "ML_Score";
-    score_bucket = put(ML_score_bucket, $20.);
-    bucket_order = input(score_bucket, best12.);
-    fraud_rate_unit = unit_fraud_rate * 100;
-    fraud_rate_dollar = dollar_fraud_rate * 100;
-    fraud_txn_cnt = fraud_txn;
-    fraud_amt = fraud_dollar;
-    total_amt = total_dollar;
-    output;
-
-    /* Score 3 */
-    score_name = "SAS50";
-    score_bucket = put(SAS50, $20.);
-    bucket_order = input(score_bucket, best12.);
-    fraud_rate_unit = unit_fraud_rate * 100;
-    fraud_rate_dollar = dollar_fraud_rate * 100;
-    fraud_txn_cnt = fraud_txn;
-    fraud_amt = fraud_dollar;
-    total_amt = total_dollar;
-    output;
+    do i = 1 to 3;
+      score_name = scores{i};
+      score_bucket = buckets{i};
+      bucket_order = input(score_bucket, best12.);
+      fraud_rate_unit = unit_fraud_rate * 100;
+      fraud_rate_dollar = dollar_fraud_rate * 100;
+      fraud_txn_cnt = fraud_txn;
+      fraud_amt = fraud_dollar;
+      total_amt = total_dollar;
+      total_txn = total_txn;
+      output;
+    end;
+    drop i Network_Score ML_score_bucket SAS50;
   run;
 
-  /* Step 4: Calculate volume share using summary + join */
+  /* Step 4: Calculate volume share */
   proc sql;
     create table totals as
     select &groupvar, score_name,
@@ -72,13 +56,15 @@
       on a.&groupvar = b.&groupvar and a.score_name = b.score_name;
   quit;
 
-  /* Step 5: Begin PDF export */
+  /* Step 5: Set PDF output */
   ods pdf file="fraud_dashboard_&groupvar..pdf" notoc dpi=300 style=journal;
-  ods graphics / reset width=12in height=8in imagemap;
+  ods graphics / reset width=12in height=6in imagemap;
 
-  /* Step 6: Loop through all values of the groupvar */
+  /* Step 6: Loop through group values and plot */
   %do i = 1 %to &groupcnt;
     %let thisval = &&groupval&i;
+
+    %put ==== Plotting for &groupvar = &thisval ===;
 
     data chart_data;
       set final_plot;
@@ -88,52 +74,64 @@
     %let labeltxt = %sysfunc(propcase(&thisval));
     %let title_prefix = %upcase(&groupvar) = &labeltxt;
 
-    /* Chart 1: Unit Fraud Rate */
+    /* --- Chart 1: Unit Fraud Rate --- */
     title "Unit Fraud Rate (%) - &title_prefix";
     proc sgplot data=chart_data;
-      series x=bucket_order y=fraud_rate_unit / group=score_name markers;
-      xaxis label="Score Bucket" type=discrete;
-      yaxis label="Unit Fraud Rate (%)";
+      series x=score_bucket y=fraud_rate_unit / group=score_name markers 
+             lineattrs=(thickness=2) datalabel datalabelpos=top;
+      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
+      yaxis label="Unit Fraud Rate (%)" grid;
+      keylegend / title="Score";
     run;
 
-    /* Chart 2: Dollar Fraud Rate */
+    /* --- Chart 2: Dollar Fraud Rate --- */
     title "Dollar Fraud Rate (%) - &title_prefix";
     proc sgplot data=chart_data;
-      series x=bucket_order y=fraud_rate_dollar / group=score_name markers;
-      xaxis label="Score Bucket" type=discrete;
-      yaxis label="Dollar Fraud Rate (%)";
+      series x=score_bucket y=fraud_rate_dollar / group=score_name markers 
+             lineattrs=(thickness=2) datalabel datalabelpos=top;
+      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
+      yaxis label="Dollar Fraud Rate (%)" grid;
+      keylegend / title="Score";
     run;
 
-    /* Chart 3: Transaction Volume Share (%) */
-    title "Transaction Volume (%) - &title_prefix";
+    /* --- Chart 3: Transaction Volume Share --- */
+    title "Transaction Volume Share (%) - &title_prefix";
     proc sgplot data=chart_data;
-      vbar bucket_order / response=vol_pct group=score_name groupdisplay=cluster datalabel;
-      xaxis label="Score Bucket" type=discrete;
-      yaxis label="Volume Share (%)";
+      vbar score_bucket / response=vol_pct group=score_name groupdisplay=cluster 
+           datalabel datalabelpos=top;
+      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
+      yaxis label="Volume Share (%)" grid;
+      keylegend / title="Score";
     run;
 
-    /* Chart 4: Dollar Volume Share (%) */
-    title "Dollar Volume (%) - &title_prefix";
+    /* --- Chart 4: Dollar Volume Share --- */
+    title "Dollar Volume Share (%) - &title_prefix";
     proc sgplot data=chart_data;
-      vbar bucket_order / response=dollar_vol_pct group=score_name groupdisplay=cluster datalabel;
-      xaxis label="Score Bucket" type=discrete;
-      yaxis label="Dollar Volume Share (%)";
+      vbar score_bucket / response=dollar_vol_pct group=score_name groupdisplay=cluster 
+           datalabel datalabelpos=top;
+      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
+      yaxis label="Dollar Volume Share (%)" grid;
+      keylegend / title="Score";
     run;
 
-    /* Chart 5: Fraud Transaction Count */
-    title "Fraud Count (Transactions) - &title_prefix";
+    /* --- Chart 5: Fraud Transaction Count --- */
+    title "Fraud Transaction Count - &title_prefix";
     proc sgplot data=chart_data;
-      vbar bucket_order / response=fraud_txn_cnt group=score_name groupdisplay=cluster datalabel;
-      xaxis label="Score Bucket" type=discrete;
-      yaxis label="Fraud Count (Txn)";
+      vbar score_bucket / response=fraud_txn_cnt group=score_name groupdisplay=cluster 
+           datalabel datalabelpos=top;
+      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
+      yaxis label="Fraud Transactions" grid;
+      keylegend / title="Score";
     run;
 
-    /* Chart 6: Fraud Dollar Count */
-    title "Fraud Count (Dollars) - &title_prefix";
+    /* --- Chart 6: Fraud Dollar Count --- */
+    title "Fraud Dollar Count - &title_prefix";
     proc sgplot data=chart_data;
-      series x=bucket_order y=fraud_amt / group=score_name markers;
-      xaxis label="Score Bucket" type=discrete;
-      yaxis label="Fraud Dollar";
+      series x=score_bucket y=fraud_amt / group=score_name markers 
+             lineattrs=(thickness=2) datalabel datalabelpos=top;
+      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
+      yaxis label="Fraud Amount ($)" grid;
+      keylegend / title="Score";
     run;
 
   %end;
