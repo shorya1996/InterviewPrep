@@ -1,152 +1,74 @@
-%macro plot_fraud_by_group(groupvar=, rev_type_list=);
+%macro plot_scores_wide(groupvar=, rev_type_list=);
 
-  /* Step 1: Filter data by rev_type */
+  /* Step 1: Filter data */
   data filtered;
     set your_sql_summary;
     where upcase(rev_type) in (&rev_type_list);
   run;
 
-  /* Step 2: Get unique group values */
+  /* Step 2: Get unique values for groupvar */
   proc sql noprint;
     select distinct &groupvar into :groupval1 - :groupval999
     from filtered;
     %let groupcnt = &sqlobs;
   quit;
 
-  /* Step 3: Reshape to long format with score_name and score_bucket */
-  data long_format;
-    set filtered;
-    length score_name $20 score_bucket $20;
-    array score_labels{3} $20 _temporary_ ('Network_Score', 'ML_Score', 'SAS50');
-    array score_buckets{3} $20 Network_Score ML_Score_Bucket SAS50;
-
-    weight = 1/3;
-
-    do i = 1 to 3;
-      score_name = score_labels{i};
-      score_bucket = score_buckets{i};
-      fraud_txn_cnt = fraud_txn * weight;
-      fraud_amt     = fraud_dollar * weight;
-      total_txn     = total_txn * weight;
-      total_amt     = total_dollar * weight;
-      output;
-    end;
-    drop i Network_Score ML_Score_Bucket SAS50;
-  run;
-
-  /* Step 4: Calculate fraud rates and volume share after aggregation */
-  proc sql;
-    create table aggregated as
-    select
-      &groupvar,
-      score_name,
-      score_bucket,
-      sum(fraud_txn_cnt) as fraud_txn_cnt,
-      sum(fraud_amt)     as fraud_amt,
-      sum(total_txn)     as total_txn,
-      sum(total_amt)     as total_amt
-    from long_format
-    group by &groupvar, score_name, score_bucket;
-  quit;
-
-  /* Step 5: Calculate total for volume share */
-  proc sql;
-    create table totals as
-    select &groupvar, score_name,
-           sum(total_txn) as total_txn_sum,
-           sum(total_amt) as total_amt_sum
-    from aggregated
-    group by &groupvar, score_name;
-  quit;
-
-  /* Step 6: Join to get percent fields */
-  proc sql;
-    create table final_plot as
-    select a.*,
-           100 * a.fraud_txn_cnt / a.total_txn as fraud_rate_unit_pct,
-           100 * a.fraud_amt     / a.total_amt as fraud_rate_dollar_pct,
-           a.fraud_txn_cnt / a.total_txn as fraud_rate_unit_raw,
-           a.fraud_amt     / a.total_amt as fraud_rate_dollar_raw,
-           100 * a.total_txn / b.total_txn_sum as vol_pct,
-           100 * a.total_amt / b.total_amt_sum as dollar_vol_pct
-    from aggregated a
-    left join totals b
-      on a.&groupvar = b.&groupvar and a.score_name = b.score_name;
-  quit;
-
-  /* Step 7: Start PDF Output */
-  ods pdf file="fraud_dashboard_&groupvar..pdf" notoc dpi=300 style=journal;
+  /* Step 3: Start PDF */
+  ods pdf file="fraud_score_dashboard_&groupvar..pdf" notoc dpi=300 style=journal;
   ods graphics / reset width=12in height=6in imagemap;
 
   %do i = 1 %to &groupcnt;
     %let thisval = &&groupval&i;
-    %let title_prefix = %upcase(&groupvar) = &thisval;
+    %let title_label = %upcase(&groupvar)=&&groupval&i;
 
-    data chart_data;
-      set final_plot;
-      where &groupvar = "&thisval";
+    /* Step 4: Compute fraud rates separately for each score */
+    proc sql;
+      create table plot_ml as
+      select ML_score_bucket as score_bucket length=20,
+             sum(fraud_txn) as fraud_txn,
+             sum(total_txn) as total_txn,
+             100 * calculated fraud_txn / calculated total_txn as fraud_rate,
+             "&thisval" as &groupvar,
+             "ML_Score" as score_name
+      from filtered
+      where &groupvar = "&thisval"
+      group by ML_score_bucket;
+
+      create table plot_sas as
+      select SAS50 as score_bucket length=20,
+             sum(fraud_txn) as fraud_txn,
+             sum(total_txn) as total_txn,
+             100 * calculated fraud_txn / calculated total_txn as fraud_rate,
+             "&thisval" as &groupvar,
+             "SAS50" as score_name
+      from filtered
+      where &groupvar = "&thisval"
+      group by SAS50;
+
+      create table plot_network as
+      select Network_Score as score_bucket length=20,
+             sum(fraud_txn) as fraud_txn,
+             sum(total_txn) as total_txn,
+             100 * calculated fraud_txn / calculated total_txn as fraud_rate,
+             "&thisval" as &groupvar,
+             "Network_Score" as score_name
+      from filtered
+      where &groupvar = "&thisval"
+      group by Network_Score;
+    quit;
+
+    /* Step 5: Merge the three score plots */
+    data plot_all;
+      set plot_ml plot_sas plot_network;
     run;
 
-    /* Optional check */
-    proc print data=chart_data (obs=5); title "Preview for &groupvar = &thisval"; run;
-
-    /* --- Chart 1: Unit Fraud Rate (%) --- */
-    title "Unit Fraud Rate (%) - &title_prefix";
-    proc sgplot data=chart_data;
-      series x=score_bucket y=fraud_rate_unit_pct / group=score_name markers
+    /* Step 6: Plot */
+    title "Fraud Rate by Score Bucket - &title_label";
+    proc sgplot data=plot_all;
+      series x=score_bucket y=fraud_rate / group=score_name markers
              lineattrs=(pattern=solid thickness=2) datalabel datalabelpos=top;
       xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
-      yaxis label="Unit Fraud Rate (%)" grid;
-      keylegend / title="Score";
-    run;
-
-    /* --- Chart 2: Dollar Fraud Rate (%) --- */
-    title "Dollar Fraud Rate (%) - &title_prefix";
-    proc sgplot data=chart_data;
-      series x=score_bucket y=fraud_rate_dollar_pct / group=score_name markers
-             lineattrs=(pattern=solid thickness=2) datalabel datalabelpos=top;
-      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
-      yaxis label="Dollar Fraud Rate (%)" grid;
-      keylegend / title="Score";
-    run;
-
-    /* --- Chart 3: Transaction Volume Share --- */
-    title "Transaction Volume Share (%) - &title_prefix";
-    proc sgplot data=chart_data;
-      vbar score_bucket / response=vol_pct group=score_name groupdisplay=cluster 
-           datalabel datalabelpos=top;
-      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
-      yaxis label="Volume Share (%)" grid;
-      keylegend / title="Score";
-    run;
-
-    /* --- Chart 4: Dollar Volume Share (%) --- */
-    title "Dollar Volume Share (%) - &title_prefix";
-    proc sgplot data=chart_data;
-      vbar score_bucket / response=dollar_vol_pct group=score_name groupdisplay=cluster 
-           datalabel datalabelpos=top;
-      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
-      yaxis label="Dollar Volume Share (%)" grid;
-      keylegend / title="Score";
-    run;
-
-    /* --- Chart 5: Fraud Transaction Count --- */
-    title "Fraud Transaction Count - &title_prefix";
-    proc sgplot data=chart_data;
-      vbar score_bucket / response=fraud_txn_cnt group=score_name groupdisplay=cluster 
-           datalabel datalabelpos=top;
-      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
-      yaxis label="Fraud Txn Count" grid;
-      keylegend / title="Score";
-    run;
-
-    /* --- Chart 6: Fraud Dollar Amount --- */
-    title "Fraud Dollar Amount - &title_prefix";
-    proc sgplot data=chart_data;
-      series x=score_bucket y=fraud_amt / group=score_name markers
-             lineattrs=(pattern=solid thickness=2) datalabel datalabelpos=top;
-      xaxis label="Score Bucket" discreteorder=data fitpolicy=rotate;
-      yaxis label="Fraud Dollar Amount ($)" grid;
+      yaxis label="Fraud Rate (%)" grid;
       keylegend / title="Score";
     run;
 
