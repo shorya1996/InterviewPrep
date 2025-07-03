@@ -1,0 +1,39 @@
+/* Single email setup */
+filename outbox email
+  to=("")
+  from=""
+  subject="Debit Fraud Score Reports"
+  attach=("/" content_type="application/zip");
+
+ods listing close;
+ods noresults;
+
+/* Start email body as a single HTML stream */
+ods html file=outbox style=sasweb;
+
+/* Custom message */
+ods text="<p>Dear recipient,</p>";
+ods text="<p>Please find the attached fraud score reports in zip format.</p>";
+ods text="<p>Below are summaries of the score comparisons.</p>";
+
+/* Section 1 */
+title "1. ML Score Comparison Between Date1-Date2 vs Date3-Date4";
+proc print data=ML_JOINED noobs label;
+run;
+
+/* Section 2 */
+title "2. SAS Score Comparison";
+proc print data=sas_score_comp noobs label;
+run;
+
+/* Section 3 */
+title "3. Network Score Comparison";
+proc print data=network_score_comp noobs label;
+run;
+
+/* Closing */
+ods text="<p>Thank you,<br>name<br>name</p>";
+
+/* Only ONE ods html close — one email */
+ods html close;
+ods listing;
