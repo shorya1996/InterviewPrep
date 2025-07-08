@@ -1,13 +1,21 @@
 import pandas as pd
 import json
+from collections import defaultdict
 
-# Load Excel
-df = pd.read_excel("your_excel_file.xlsx")
+# --- Config ---
+input_file = "your_excel_file.xlsx"
+output_file = "final_request_payloads.json"
+header_columns_count = 4  # Adjust if header columns count changes
 
-# Number of columns that belong to request headers
-header_columns_count = 4  # Adjust based on your file
+# --- Smart casting: remove .0 from whole numbers but keep others intact ---
+def smart_cast(val):
+    if isinstance(val, float):
+        if val.is_integer():
+            return int(val)
+        return val
+    return val
 
-# Parse path function to split dotted/brace fields
+# --- Parse nested path including arrays ([])
 def parse_path(path):
     parts = []
     temp = ''
@@ -29,13 +37,13 @@ def parse_path(path):
         parts.append(temp)
     return parts
 
-# Build nested dictionary from key path
+# --- Build nested dictionary from keys and value ---
 def nest_keys(keys, value):
     if not keys:
         return value
     return {keys[0]: nest_keys(keys[1:], value)}
 
-# Merge two nested dictionaries
+# --- Merge two nested dictionaries ---
 def merge_dicts(a, b):
     for key in b:
         if key in a and isinstance(a[key], dict) and isinstance(b[key], dict):
@@ -44,31 +52,49 @@ def merge_dicts(a, b):
             a[key] = b[key]
     return a
 
-# Build JSON objects row-wise
+# --- Main: convert each row to structured JSON ---
+df = pd.read_excel(input_file)
 json_requests = []
+
 for _, row in df.iterrows():
     request = {"headers": {}, "body": {}}
-    
-    # Process headers
+    array_fields = defaultdict(list)
+
+    # --- Process headers ---
     for col in df.columns[:header_columns_count]:
         val = row[col]
         if pd.notna(val):
-            request["headers"][col] = val
+            request["headers"][col] = smart_cast(val)
 
-    # Process body fields
+    # --- Process body (including arrays) ---
     for col in df.columns[header_columns_count:]:
         val = row[col]
         if pd.isna(val):
             continue
+        val = smart_cast(val)
+
+        # Handle arrays
+        if col.endswith("[]"):
+            clean_col = col[:-2]  # remove the trailing []
+            array_fields[clean_col].append(val)
+            continue
+
+        # Regular nested field
         keys = parse_path(col)
         nested = nest_keys(keys, val)
         request["body"] = merge_dicts(request["body"], nested)
 
+    # --- Inject array fields into nested structure ---
+    for array_col, values in array_fields.items():
+        keys = parse_path(array_col)
+        nested = nest_keys(keys, values)
+        request["body"] = merge_dicts(request["body"], nested)
+
     json_requests.append(request)
 
-# Output JSON list
-with open("final_request_payloads.json", "w") as f:
+# --- Save to JSON file ---
+with open(output_file, "w") as f:
     json.dump(json_requests, f, indent=2)
 
-# Optional: print one
+# --- Print first one for quick check ---
 print(json.dumps(json_requests[0], indent=2))
