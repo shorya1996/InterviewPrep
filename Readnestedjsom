@@ -2,50 +2,35 @@ import pandas as pd
 import json
 import re
 
-# === CONFIG ===
-input_file = "your_excel_file.xlsx"   # Update this path
+# === CONFIGURATION ===
+input_file = "your_excel_file.xlsx"    # ← Update this
 output_file = "final_output.json"
-header_columns_count = 4              # First N columns = headers
+header_columns_count = 4               # ← First N columns are headers
 
-# === TYPE FIXER: 1234.0 → 1234 ===
+# === TYPE CLEANUP: Convert float like 1234.0 → int ===
 def smart_cast(val):
     if isinstance(val, float) and val.is_integer():
         return int(val)
     return val
 
-# === PATH PARSER: Handles {}, [], . ===
+# === PARSE PATH FROM COLUMN NAME ===
 def parse_path(path):
-    parts = []
-    temp = ''
-    in_brace = False
+    # Remove any {...} patterns — safe even if malformed or unclosed
+    path = re.sub(r"\{[^}]*\}", "", path)
 
-    # Split on '.' outside of braces
-    for c in path:
-        if c == '{':
-            in_brace = True
-        elif c == '}':
-            in_brace = False
-            continue
-        elif c == '.' and not in_brace:
-            if temp:
-                parts.append(temp)
-                temp = ''
-            continue
-        temp += c
-    if temp:
-        parts.append(temp)
+    # Split on dot (.) to get nested path segments
+    parts = path.split(".")
 
-    # Remove type hints {CurrencyAmount}, detect arrays
+    # Detect and flag arrays with []
     cleaned = []
     for part in parts:
-        clean_part = re.sub(r"{.*?}", "", part)  # remove {...}
-        if "[]" in clean_part:
-            cleaned.append((clean_part.replace("[]", ""), "array"))
+        if "[]" in part:
+            cleaned.append((part.replace("[]", ""), "array"))
         else:
-            cleaned.append((clean_part, "dict"))
+            cleaned.append((part, "dict"))
     return cleaned
 
-# === INSERT VALUE SAFELY INTO NESTED STRUCTURE ===
+# === INSERT NESTED VALUE INTO TREE STRUCTURE ===
 def insert_nested(root, path, value):
     if not path:
         return value
@@ -76,13 +61,13 @@ json_requests = []
 for _, row in df.iterrows():
     request = {"headers": {}, "body": {}}
 
-    # Headers
+    # Extract headers (first N columns)
     for col in df.columns[:header_columns_count]:
         val = row[col]
         if pd.notna(val):
             request["headers"][col] = smart_cast(val)
 
-    # Body
+    # Extract body fields (rest of the columns)
     body = {}
     for col in df.columns[header_columns_count:]:
         val = row[col]
@@ -95,7 +80,7 @@ for _, row in df.iterrows():
     request["body"] = body
     json_requests.append(request)
 
-# === SAVE TO JSON FILE ===
+# === OUTPUT TO JSON FILE ===
 with open(output_file, "w") as f:
     json.dump(json_requests, f, indent=2)
 
