@@ -2,25 +2,24 @@ import pandas as pd
 import json
 import re
 
-# === CONFIG ===
-input_file = "your_excel_file.xlsx"     # 🔁 Replace with your file path
+# === CONFIGURATION ===
+input_file = "your_excel_file.xlsx"  # Replace with your Excel file
 output_file = "final_output.json"
-header_columns_count = 4                # 🔁 First N columns are headers
+header_columns_count = 4             # Number of header columns before JSON body starts
 
-# === TYPE CASTING ===
+# === CASTING: Float 1234.0 → Int 1234 ===
 def smart_cast(val):
     if isinstance(val, float) and val.is_integer():
         return int(val)
     return val
 
-# === PARSE COLUMN NAME INTO STRUCTURED PATH ===
+# === PARSE COLUMN PATH INTO NESTED STRUCTURE ===
 def parse_path(path):
     # Remove type hints like {CurrencyAmount}
     path = re.sub(r"\{[^}]*\}", "", path)
 
     parts = []
     for segment in path.split("."):
-        # Match indexed array like field[0], field[1]
         match = re.match(r"(.+?)\[(\d+)\]$", segment)
         if match:
             parts.append((match.group(1), "array", int(match.group(2))))
@@ -30,7 +29,7 @@ def parse_path(path):
             parts.append((segment, "dict", None))
     return parts
 
-# === INSERT VALUE INTO NESTED STRUCTURE BASED ON PATH ===
+# === SAFELY INSERT VALUE INTO NESTED DICTIONARY ===
 def insert_nested(root, path, value):
     if not path:
         return value
@@ -41,39 +40,44 @@ def insert_nested(root, path, value):
         if key not in root or not isinstance(root[key], list):
             root[key] = []
 
-        # Choose index: explicit [i] or always use first [0] if unspecified
         idx = index if index is not None else 0
 
-        # Expand list to required size
         while len(root[key]) <= idx:
             root[key].append({})
+
+        # ✅ Fix: If accidentally a string/int is already there, reset to dict
+        if not isinstance(root[key][idx], dict):
+            root[key][idx] = {}
 
         root[key][idx] = insert_nested(root[key][idx], path[1:], value)
 
     else:
         if key not in root or not isinstance(root[key], dict):
             root[key] = {}
+
         if path[1:]:
+            if not isinstance(root[key], dict):
+                root[key] = {}
             root[key] = insert_nested(root[key], path[1:], value)
         else:
             root[key] = value
 
     return root
 
-# === MAIN EXECUTION ===
+# === MAIN SCRIPT EXECUTION ===
 df = pd.read_excel(input_file)
 json_requests = []
 
 for _, row in df.iterrows():
     request = {"headers": {}, "body": {}}
 
-    # Extract headers
+    # Handle headers (first N columns)
     for col in df.columns[:header_columns_count]:
         val = row[col]
         if pd.notna(val):
             request["headers"][col] = smart_cast(val)
 
-    # Extract body
+    # Handle JSON body
     body = {}
     for col in df.columns[header_columns_count:]:
         val = row[col]
@@ -86,7 +90,7 @@ for _, row in df.iterrows():
     request["body"] = body
     json_requests.append(request)
 
-# === WRITE OUTPUT ===
+# === OUTPUT TO JSON FILE ===
 with open(output_file, "w") as f:
     json.dump(json_requests, f, indent=2)
 
