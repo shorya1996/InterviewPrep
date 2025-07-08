@@ -2,7 +2,7 @@ import pandas as pd
 import json
 
 # === CONFIG ===
-input_file = "your_excel_file.xlsx"  # Change to your file path
+input_file = "your_excel_file.xlsx"  # Update to your Excel file path
 output_file = "final_output.json"
 header_columns_count = 4  # First N columns are request headers
 
@@ -30,7 +30,8 @@ def parse_path(path):
         temp += c
     if temp:
         parts.append(temp)
-    
+
+    # Identify array keys
     cleaned = []
     for part in parts:
         if "[]" in part:
@@ -39,7 +40,7 @@ def parse_path(path):
             cleaned.append((part, "dict"))
     return cleaned
 
-# === NESTED INSERTION FUNCTION ===
+# === SAFE NESTED INSERTION ===
 def insert_nested(root, path, value):
     if not path:
         return value
@@ -49,13 +50,16 @@ def insert_nested(root, path, value):
     if kind == "array":
         if key not in root or not isinstance(root[key], list):
             root[key] = []
-        if not root[key]:
-            root[key].append({})
+
+        if not root[key] or not isinstance(root[key][0], dict):
+            root[key] = [{}]
+
         root[key][0] = insert_nested(root[key][0], path[1:], value)
 
     else:
         if key not in root or not isinstance(root[key], dict):
             root[key] = {}
+
         if path[1:]:
             root[key] = insert_nested(root[key], path[1:], value)
         else:
@@ -63,20 +67,20 @@ def insert_nested(root, path, value):
 
     return root
 
-# === READ EXCEL & PROCESS ===
+# === MAIN EXECUTION ===
 df = pd.read_excel(input_file)
 json_requests = []
 
 for _, row in df.iterrows():
     request = {"headers": {}, "body": {}}
 
-    # Extract headers
+    # Process headers
     for col in df.columns[:header_columns_count]:
         val = row[col]
         if pd.notna(val):
             request["headers"][col] = smart_cast(val)
 
-    # Extract body
+    # Process body
     body = {}
     for col in df.columns[header_columns_count:]:
         val = row[col]
@@ -89,7 +93,7 @@ for _, row in df.iterrows():
     request["body"] = body
     json_requests.append(request)
 
-# === WRITE TO JSON ===
+# === WRITE TO JSON FILE ===
 with open(output_file, "w") as f:
     json.dump(json_requests, f, indent=2)
 
