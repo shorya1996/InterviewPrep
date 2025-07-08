@@ -1,0 +1,74 @@
+import pandas as pd
+import json
+
+# Load Excel
+df = pd.read_excel("your_excel_file.xlsx")
+
+# Number of columns that belong to request headers
+header_columns_count = 4  # Adjust based on your file
+
+# Parse path function to split dotted/brace fields
+def parse_path(path):
+    parts = []
+    temp = ''
+    in_brace = False
+    for c in path:
+        if c == '{':
+            in_brace = True
+            continue
+        elif c == '}':
+            in_brace = False
+            continue
+        elif c == '.' and not in_brace:
+            if temp:
+                parts.append(temp)
+                temp = ''
+            continue
+        temp += c
+    if temp:
+        parts.append(temp)
+    return parts
+
+# Build nested dictionary from key path
+def nest_keys(keys, value):
+    if not keys:
+        return value
+    return {keys[0]: nest_keys(keys[1:], value)}
+
+# Merge two nested dictionaries
+def merge_dicts(a, b):
+    for key in b:
+        if key in a and isinstance(a[key], dict) and isinstance(b[key], dict):
+            merge_dicts(a[key], b[key])
+        else:
+            a[key] = b[key]
+    return a
+
+# Build JSON objects row-wise
+json_requests = []
+for _, row in df.iterrows():
+    request = {"headers": {}, "body": {}}
+    
+    # Process headers
+    for col in df.columns[:header_columns_count]:
+        val = row[col]
+        if pd.notna(val):
+            request["headers"][col] = val
+
+    # Process body fields
+    for col in df.columns[header_columns_count:]:
+        val = row[col]
+        if pd.isna(val):
+            continue
+        keys = parse_path(col)
+        nested = nest_keys(keys, val)
+        request["body"] = merge_dicts(request["body"], nested)
+
+    json_requests.append(request)
+
+# Output JSON list
+with open("final_request_payloads.json", "w") as f:
+    json.dump(json_requests, f, indent=2)
+
+# Optional: print one
+print(json.dumps(json_requests[0], indent=2))
