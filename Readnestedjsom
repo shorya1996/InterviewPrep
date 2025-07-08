@@ -3,10 +3,9 @@ import json
 import re
 from collections import defaultdict
 
-# === CONFIG ===
-input_file = "your_excel_file.xlsx"  # Change this
+input_file = "your_excel_file.xlsx"  # your file path
 output_file = "final_output.json"
-header_columns_count = 4  # first 4 columns = request headers
+header_columns_count = 4
 
 def smart_cast(val):
     if isinstance(val, float) and val.is_integer():
@@ -14,8 +13,10 @@ def smart_cast(val):
     return val
 
 def parse_path(path):
-    """Convert a.b{c}.d into ['a', 'b', 'c', 'd']"""
-    parts, temp, in_brace = [], '', False
+    # Convert path to structured keys, recognizing arrays by "[]"
+    parts = []
+    temp = ''
+    in_brace = False
     for c in path:
         if c == '{':
             in_brace = True
@@ -31,74 +32,67 @@ def parse_path(path):
         temp += c
     if temp:
         parts.append(temp)
-    return parts
-
-def nest_keys(keys, value):
-    if not keys:
-        return value
-    return {keys[0]: nest_keys(keys[1:], value)}
-
-def merge_dicts(a, b):
-    for k in b:
-        if k in a and isinstance(a[k], dict) and isinstance(b[k], dict):
-            merge_dicts(a[k], b[k])
+    
+    # Mark array keys
+    cleaned = []
+    for part in parts:
+        if "[]" in part:
+            cleaned.append((part.replace("[]", ""), "array"))
         else:
-            a[k] = b[k]
-    return a
+            cleaned.append((part, "dict"))
+    return cleaned
 
-# === READ DATA ===
+def insert_nested(root, path, value):
+    """Recursive insertion of value at nested path with array handling"""
+    if not path:
+        return value
+    
+    key, kind = path[0]
+    
+    if kind == "array":
+        # Initialize list if not present
+        if key not in root:
+            root[key] = []
+        
+        # We’ll always insert as one object for now
+        if len(root[key]) == 0:
+            root[key].append({})
+        
+        root[key][0] = insert_nested(root[key][0], path[1:], value)
+    else:
+        if key not in root:
+            root[key] = {}
+        root[key] = insert_nested(root[key], path[1:], value)
+    return root
+
+# Load data
 df = pd.read_excel(input_file)
 json_requests = []
 
-# === DETECT ARRAY GROUPS ===
-array_field_groups = defaultdict(list)
-for col in df.columns[header_columns_count:]:
-    # Detect array fields like deliveryAddress{PostalAddress}.addressLine[] or giftCard[].amount
-    match = re.match(r"(.*\[\])(?:\.\d+)?$", col)
-    if match:
-        array_key = match.group(1)
-        array_field_groups[array_key].append(col)
-
-# === PROCESS EACH ROW ===
 for _, row in df.iterrows():
     request = {"headers": {}, "body": {}}
-    used_array_columns = set()
-
+    
     # Headers
     for col in df.columns[:header_columns_count]:
         val = row[col]
         if pd.notna(val):
             request["headers"][col] = smart_cast(val)
 
-    # Arrays first
-    for array_key, columns in array_field_groups.items():
-        values = []
-        for col in sorted(columns):
-            val = row.get(col)
-            if pd.notna(val):
-                values.append(smart_cast(val))
-            used_array_columns.add(col)
-        if values:
-            keys = parse_path(array_key[:-2])  # remove trailing []
-            nested = nest_keys(keys, values)
-            request["body"] = merge_dicts(request["body"], nested)
-
-    # Regular fields
+    # Body
+    body = {}
     for col in df.columns[header_columns_count:]:
-        if col in used_array_columns:
-            continue
         val = row[col]
         if pd.isna(val):
             continue
         val = smart_cast(val)
-        keys = parse_path(col)
-        nested = nest_keys(keys, val)
-        request["body"] = merge_dicts(request["body"], nested)
+        path = parse_path(col)
+        body = insert_nested(body, path, val)
 
+    request["body"] = body
     json_requests.append(request)
 
-# === OUTPUT ===
+# Write output
 with open(output_file, "w") as f:
     json.dump(json_requests, f, indent=2)
 
-print("✅ Final JSON written to", output_file)
+print("✅ JSON written to", output_file)
