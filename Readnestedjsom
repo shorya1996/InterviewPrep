@@ -1,29 +1,27 @@
 import pandas as pd
 import json
-import re
-from collections import defaultdict
 
-input_file = "your_excel_file.xlsx"  # your file path
+# === CONFIG ===
+input_file = "your_excel_file.xlsx"  # Change to your file path
 output_file = "final_output.json"
-header_columns_count = 4
+header_columns_count = 4  # First N columns are request headers
 
+# === SMART TYPE CASTING ===
 def smart_cast(val):
     if isinstance(val, float) and val.is_integer():
         return int(val)
     return val
 
+# === PARSE PATH FROM COLUMN NAME ===
 def parse_path(path):
-    # Convert path to structured keys, recognizing arrays by "[]"
     parts = []
     temp = ''
     in_brace = False
     for c in path:
         if c == '{':
             in_brace = True
-            continue
         elif c == '}':
             in_brace = False
-            continue
         elif c == '.' and not in_brace:
             if temp:
                 parts.append(temp)
@@ -33,7 +31,6 @@ def parse_path(path):
     if temp:
         parts.append(temp)
     
-    # Mark array keys
     cleaned = []
     for part in parts:
         if "[]" in part:
@@ -42,43 +39,44 @@ def parse_path(path):
             cleaned.append((part, "dict"))
     return cleaned
 
+# === NESTED INSERTION FUNCTION ===
 def insert_nested(root, path, value):
-    """Recursive insertion of value at nested path with array handling"""
     if not path:
         return value
-    
+
     key, kind = path[0]
-    
+
     if kind == "array":
-        # Initialize list if not present
-        if key not in root:
+        if key not in root or not isinstance(root[key], list):
             root[key] = []
-        
-        # We’ll always insert as one object for now
-        if len(root[key]) == 0:
+        if not root[key]:
             root[key].append({})
-        
         root[key][0] = insert_nested(root[key][0], path[1:], value)
+
     else:
-        if key not in root:
+        if key not in root or not isinstance(root[key], dict):
             root[key] = {}
-        root[key] = insert_nested(root[key], path[1:], value)
+        if path[1:]:
+            root[key] = insert_nested(root[key], path[1:], value)
+        else:
+            root[key] = value
+
     return root
 
-# Load data
+# === READ EXCEL & PROCESS ===
 df = pd.read_excel(input_file)
 json_requests = []
 
 for _, row in df.iterrows():
     request = {"headers": {}, "body": {}}
-    
-    # Headers
+
+    # Extract headers
     for col in df.columns[:header_columns_count]:
         val = row[col]
         if pd.notna(val):
             request["headers"][col] = smart_cast(val)
 
-    # Body
+    # Extract body
     body = {}
     for col in df.columns[header_columns_count:]:
         val = row[col]
@@ -91,8 +89,8 @@ for _, row in df.iterrows():
     request["body"] = body
     json_requests.append(request)
 
-# Write output
+# === WRITE TO JSON ===
 with open(output_file, "w") as f:
     json.dump(json_requests, f, indent=2)
 
-print("✅ JSON written to", output_file)
+print("✅ JSON file written to:", output_file)
