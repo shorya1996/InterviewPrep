@@ -1,12 +1,12 @@
 import pandas as pd
 import json
-from collections import defaultdict
 import re
+from collections import defaultdict
 
 # === CONFIG ===
-input_file = "your_excel_file.xlsx"  # update with your actual file
+input_file = "your_excel_file.xlsx"  # Change this
 output_file = "final_output.json"
-header_columns_count = 4  # first N columns are request headers
+header_columns_count = 4  # first 4 columns = request headers
 
 def smart_cast(val):
     if isinstance(val, float) and val.is_integer():
@@ -14,9 +14,8 @@ def smart_cast(val):
     return val
 
 def parse_path(path):
-    parts = []
-    temp = ''
-    in_brace = False
+    """Convert a.b{c}.d into ['a', 'b', 'c', 'd']"""
+    parts, temp, in_brace = [], '', False
     for c in path:
         if c == '{':
             in_brace = True
@@ -40,11 +39,11 @@ def nest_keys(keys, value):
     return {keys[0]: nest_keys(keys[1:], value)}
 
 def merge_dicts(a, b):
-    for key in b:
-        if key in a and isinstance(a[key], dict) and isinstance(b[key], dict):
-            merge_dicts(a[key], b[key])
+    for k in b:
+        if k in a and isinstance(a[k], dict) and isinstance(b[k], dict):
+            merge_dicts(a[k], b[k])
         else:
-            a[key] = b[key]
+            a[k] = b[k]
     return a
 
 # === READ DATA ===
@@ -53,39 +52,38 @@ json_requests = []
 
 # === DETECT ARRAY GROUPS ===
 array_field_groups = defaultdict(list)
-
 for col in df.columns[header_columns_count:]:
-    base_col_match = re.match(r"(.+)\[\](\.\d+)?$", col)
-    if base_col_match:
-        base_key = base_col_match.group(1)
-        array_field_groups[base_key].append(col)
+    # Detect array fields like deliveryAddress{PostalAddress}.addressLine[] or giftCard[].amount
+    match = re.match(r"(.*\[\])(?:\.\d+)?$", col)
+    if match:
+        array_key = match.group(1)
+        array_field_groups[array_key].append(col)
 
 # === PROCESS EACH ROW ===
 for _, row in df.iterrows():
     request = {"headers": {}, "body": {}}
+    used_array_columns = set()
 
-    # === HEADERS ===
+    # Headers
     for col in df.columns[:header_columns_count]:
         val = row[col]
         if pd.notna(val):
             request["headers"][col] = smart_cast(val)
 
-    used_array_columns = set()
-
-    # === HANDLE ARRAYS FIRST ===
+    # Arrays first
     for array_key, columns in array_field_groups.items():
         values = []
-        for col in sorted(columns):  # maintain order
+        for col in sorted(columns):
             val = row.get(col)
             if pd.notna(val):
                 values.append(smart_cast(val))
             used_array_columns.add(col)
         if values:
-            keys = parse_path(array_key)
+            keys = parse_path(array_key[:-2])  # remove trailing []
             nested = nest_keys(keys, values)
             request["body"] = merge_dicts(request["body"], nested)
 
-    # === HANDLE REGULAR FIELDS ===
+    # Regular fields
     for col in df.columns[header_columns_count:]:
         if col in used_array_columns:
             continue
@@ -99,8 +97,8 @@ for _, row in df.iterrows():
 
     json_requests.append(request)
 
-# === WRITE FINAL JSON ===
+# === OUTPUT ===
 with open(output_file, "w") as f:
     json.dump(json_requests, f, indent=2)
 
-print("✅ JSON written to", output_file)
+print("✅ Final JSON written to", output_file)
