@@ -2,20 +2,18 @@ import pandas as pd
 import json
 from collections import defaultdict
 
-# --- Config ---
-input_file = "your_excel_file.xlsx"  # Change this to your actual file path
-output_file = "final_request_payloads.json"
-header_columns_count = 4  # Adjust if you have more/less header columns
+# === CONFIGURATION ===
+input_file = "your_excel_file.xlsx"  # Change to your file
+output_file = "output.json"
+header_columns_count = 4  # First 4 columns = request headers
 
-# --- Smart cast: keep numbers clean, remove .0 if integer ---
+# === Convert number values nicely ===
 def smart_cast(val):
-    if isinstance(val, float):
-        if val.is_integer():
-            return int(val)
-        return val
+    if isinstance(val, float) and val.is_integer():
+        return int(val)
     return val
 
-# --- Parse path like a{b}.c into ['a', 'b', 'c'] ---
+# === Split path like a{b}.c into ['a', 'b', 'c'] ===
 def parse_path(path):
     parts = []
     temp = ''
@@ -37,13 +35,13 @@ def parse_path(path):
         parts.append(temp)
     return parts
 
-# --- Build nested structure from keys and value ---
+# === Build nested dict from keys ===
 def nest_keys(keys, value):
     if not keys:
         return value
     return {keys[0]: nest_keys(keys[1:], value)}
 
-# --- Merge nested dictionaries recursively ---
+# === Merge dictionaries recursively ===
 def merge_dicts(a, b):
     for key in b:
         if key in a and isinstance(a[key], dict) and isinstance(b[key], dict):
@@ -52,50 +50,50 @@ def merge_dicts(a, b):
             a[key] = b[key]
     return a
 
-# --- Load Excel ---
+# === READ DATA ===
 df = pd.read_excel(input_file)
 json_requests = []
 
-# --- Process each row ---
+# === PROCESS EACH ROW ===
 for _, row in df.iterrows():
     request = {"headers": {}, "body": {}}
     array_fields = defaultdict(list)
 
-    # --- Handle request headers ---
+    # Process headers
     for col in df.columns[:header_columns_count]:
         val = row[col]
         if pd.notna(val):
             request["headers"][col] = smart_cast(val)
 
-    # --- Handle body fields ---
+    # Process body fields
     for col in df.columns[header_columns_count:]:
         val = row[col]
         if pd.isna(val):
             continue
         val = smart_cast(val)
 
-        # --- Array columns ---
+        # If it's an array field like addressLine[]
         if col.endswith("[]"):
-            base_col = col[:-2]  # Remove [] from name
-            array_fields[base_col].append(val)
+            array_key = col[:-2]  # remove []
+            array_fields[array_key].append(val)
             continue
 
-        # --- Regular nested fields ---
+        # Regular field
         keys = parse_path(col)
         nested = nest_keys(keys, val)
         request["body"] = merge_dicts(request["body"], nested)
 
-    # --- Merge collected arrays into body ---
-    for array_path, array_values in array_fields.items():
-        keys = parse_path(array_path)
-        nested = nest_keys(keys, array_values)
+    # Inject array fields as proper lists
+    for array_key, array_vals in array_fields.items():
+        keys = parse_path(array_key)
+        nested = nest_keys(keys, array_vals)  # array_vals is a list
         request["body"] = merge_dicts(request["body"], nested)
 
     json_requests.append(request)
 
-# --- Output final JSON ---
+# === WRITE FINAL OUTPUT ===
 with open(output_file, "w") as f:
     json.dump(json_requests, f, indent=2)
 
-# Optional: print one sample
+# Optional: print first record
 print(json.dumps(json_requests[0], indent=2))
