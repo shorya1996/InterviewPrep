@@ -1,40 +1,118 @@
-/* Step 1: Define coarse grid from -1 to 1 in steps of 0.05 */
-data coarse_grid;
-  do w_ml = -1 to 1 by 0.05;
-    do w_sas = -1 to 1 by 0.05;
-      do w_nw = -1 to 1 by 0.05;
-        if abs(w_ml) + abs(w_sas) + abs(w_nw) = 1 then output;
-      end;
+/* Step 0: Macro to compute AUC for a set of weights */
+%macro evaluate_weights(w1, w2, w3, tag);
+    data scored_&tag.;
+        set base_data;
+        fraud_score = &w1.*ml_score + &w2.*sas_score + &w3.*nw_score;
+    run;
+
+    /* Sort for ROC */
+    proc sort data=scored_&tag.; by descending fraud_score; run;
+
+    /* Use PROC LOGISTIC to get AUC */
+    ods output ROCAssociation=roc_&tag.(keep=Area); /* AUC only */
+    proc logistic data=scored_&tag. noprint;
+        model fraud_flag(event='1') = fraud_score;
+        score data=scored_&tag. out=out_&tag.(keep=fraud_score fraud_flag);
+    run;
+%mend;
+
+/* Step 1: Generate coarse weight combinations from -1 to 1 (step=0.1) where sum ≈ 1 */
+data weight_grid;
+    do w1 = -1 to 1 by 0.1;
+        do w2 = -1 to 1 by 0.1;
+            do w3 = -1 to 1 by 0.1;
+                total = w1 + w2 + w3;
+                if abs(total - 1) < 0.001 then do;
+                    tag = cats('w_', put(w1, best.), '_', put(w2, best.), '_', put(w3, best.));
+                    output;
+                end;
+            end;
+        end;
     end;
-  end;
 run;
 
-/* Step 2: Apply each weight combination to generate FraudScore */
-proc sql;
-  create table coarse_scores as
-  select 
-    a.*,
-    b.w_ml, b.w_sas, b.w_nw,
-    (b.w_ml * ml_score + b.w_sas * sas_score + b.w_nw * nw_score) as fraud_score
-  from base_data a, coarse_grid b;
+/* Step 2: Loop over the grid and compute AUC for each combination */
+data results_coarse;
+    length tag $50;
+    set weight_grid;
+    call execute('%nrstr(%evaluate_weights)(' || w1 || ',' || w2 || ',' || w3 || ', ' || tag || ');');
+run;
+
+/* Wait for all macro executions to complete */
+%macro gather_roc_results;
+    data all_auc;
+        length tag $50;
+        set 
+        %let dsid = %sysfunc(open(weight_grid));
+        %let nobs = %sysfunc(attrn(&dsid,nlobs));
+        %do i=1 %to &nobs;
+            %let rc = %sysfunc(fetchobs(&dsid,&i));
+            %let tag = %sysfunc(getvarc(&dsid, %sysfunc(varnum(&dsid,tag))));
+            roc_&tag.
+        %end;
+        ;
+    run;
+%mend;
+%gather_roc_results
+
+/* Step 3: Find best weight combination from coarse grid */
+proc sql outobs=1;
+    create table best_coarse as
+    select * from all_auc
+    order by Area desc;
 quit;
 
-/* Step 3: Evaluate AUC for each weight combination */
-proc sort data=coarse_scores;
-  by w_ml w_sas w_nw;
+/* Step 4: Extract best weights for fine tuning */
+data _null_;
+    set best_coarse;
+    call symputx('best_w1', scan(tag, 2, '_'));
+    call symputx('best_w2', scan(tag, 3, '_'));
+    call symputx('best_w3', scan(tag, 4, '_'));
 run;
 
-proc logistic data=coarse_scores noprint;
-  by w_ml w_sas w_nw;
-  model fraud_flag(event='1') = fraud_score;
-  ods output ROCAssociation=coarse_auc;
+/* Step 5: Fine grid around best weights (step=0.01 from -0.05 to +0.05 around best) */
+data fine_weight_grid;
+    do dw1 = -0.05 to 0.05 by 0.01;
+        do dw2 = -0.05 to 0.05 by 0.01;
+            w1 = &best_w1. + dw1;
+            w2 = &best_w2. + dw2;
+            w3 = &best_w3. + (-dw1 - dw2); /* Ensure sum remains same */
+            tag = cats('fine_', put(w1, best.), '_', put(w2, best.), '_', put(w3, best.));
+            output;
+        end;
+    end;
 run;
 
-/* Step 4: Pick best weights from coarse grid */
-proc sort data=coarse_auc;
-  by descending Area;
+/* Step 6: Evaluate fine grid */
+data results_fine;
+    length tag $50;
+    set fine_weight_grid;
+    call execute('%nrstr(%evaluate_weights)(' || w1 || ',' || w2 || ',' || w3 || ', ' || tag || ');');
 run;
 
+/* Step 7: Gather fine AUC results */
+%macro gather_fine_results;
+    data all_auc_fine;
+        length tag $50;
+        set 
+        %let dsid = %sysfunc(open(fine_weight_grid));
+        %let nobs = %sysfunc(attrn(&dsid,nlobs));
+        %do i=1 %to &nobs;
+            %let rc = %sysfunc(fetchobs(&dsid,&i));
+            %let tag = %sysfunc(getvarc(&dsid, %sysfunc(varnum(&dsid,tag))));
+            roc_&tag.
+        %end;
+        ;
+    run;
+%mend;
+%gather_fine_results
+
+/* Step 8: Final Best Weights */
+proc sql outobs=1;
+    create table best_weights as
+    select * from all_auc_fine
+    order by Area desc;
+quit;
 data best_coarse_weight;
   set coarse_auc(obs=1);
   keep w_ml w_sas w_nw Area;
