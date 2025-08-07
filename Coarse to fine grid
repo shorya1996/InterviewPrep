@@ -1,0 +1,84 @@
+/* Step 1: Define coarse grid from -1 to 1 in steps of 0.05 */
+data coarse_grid;
+  do w_ml = -1 to 1 by 0.05;
+    do w_sas = -1 to 1 by 0.05;
+      do w_nw = -1 to 1 by 0.05;
+        if abs(w_ml) + abs(w_sas) + abs(w_nw) = 1 then output;
+      end;
+    end;
+  end;
+run;
+
+/* Step 2: Apply each weight combination to generate FraudScore */
+proc sql;
+  create table coarse_scores as
+  select 
+    a.*,
+    b.w_ml, b.w_sas, b.w_nw,
+    (b.w_ml * ml_score + b.w_sas * sas_score + b.w_nw * nw_score) as fraud_score
+  from base_data a, coarse_grid b;
+quit;
+
+/* Step 3: Evaluate AUC for each weight combination */
+proc sort data=coarse_scores;
+  by w_ml w_sas w_nw;
+run;
+
+proc logistic data=coarse_scores noprint;
+  by w_ml w_sas w_nw;
+  model fraud_flag(event='1') = fraud_score;
+  ods output ROCAssociation=coarse_auc;
+run;
+
+/* Step 4: Pick best weights from coarse grid */
+proc sort data=coarse_auc;
+  by descending Area;
+run;
+
+data best_coarse_weight;
+  set coarse_auc(obs=1);
+  keep w_ml w_sas w_nw Area;
+run;
+
+/* Step 5: Create fine grid around best coarse weights */
+data fine_grid;
+  set best_coarse_weight;
+  do w_ml = w_ml - 0.05 to w_ml + 0.05 by 0.01;
+    do w_sas = w_sas - 0.05 to w_sas + 0.05 by 0.01;
+      do w_nw = w_nw - 0.05 to w_nw + 0.05 by 0.01;
+        if abs(w_ml) + abs(w_sas) + abs(w_nw) = 1 then output;
+      end;
+    end;
+  end;
+run;
+
+/* Step 6: Apply fine weights to scores */
+proc sql;
+  create table fine_scores as
+  select 
+    a.*,
+    b.w_ml, b.w_sas, b.w_nw,
+    (b.w_ml * ml_score + b.w_sas * sas_score + b.w_nw * nw_score) as fraud_score
+  from base_data a, fine_grid b;
+quit;
+
+/* Step 7: Evaluate fine-tuned AUC */
+proc sort data=fine_scores;
+  by w_ml w_sas w_nw;
+run;
+
+proc logistic data=fine_scores noprint;
+  by w_ml w_sas w_nw;
+  model fraud_flag(event='1') = fraud_score;
+  ods output ROCAssociation=fine_auc;
+run;
+
+/* Step 8: Pick final best weights */
+proc sort data=fine_auc;
+  by descending Area;
+run;
+
+data final_best_weights;
+  set fine_auc(obs=1);
+  keep w_ml w_sas w_nw Area;
+run;
